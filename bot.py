@@ -2,7 +2,7 @@ import os
 import time
 import libtorrent as lt
 from telegram import Update, Bot
-from telegram.ext import (Application, CommandHandler, MessageHandler, filters, CallbackContext)
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from io import BytesIO
 
 # Configuration
@@ -12,20 +12,22 @@ STATUS_INTERVAL = 5  # Update interval in seconds
 
 # Initialize libtorrent session
 ses = lt.session()
-ses.listen_on(6881, 6891)
+ses.listen_on([6881, 6891])  # Updated listen method
 
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(
+# Start command handler
+async def start(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text(
         "📤 Send me a torrent file to start downloading!\n"
         "I'll send you the files once completed and clean up automatically!"
     )
 
-def handle_torrent(update: Update, context: CallbackContext) -> None:
+# Handle received torrent file
+async def handle_torrent(update: Update, context: CallbackContext) -> None:
     try:
         # Get torrent file from user
         torrent_file = update.message.document.get_file()
         file_stream = BytesIO()
-        torrent_file.download(out=file_stream)
+        await torrent_file.download(out=file_stream)
         file_stream.seek(0)
         
         # Save torrent file temporarily
@@ -45,20 +47,20 @@ def handle_torrent(update: Update, context: CallbackContext) -> None:
         context.job_queue.run_repeating(
             update_status,
             STATUS_INTERVAL,
-            context={"chat_id": update.message.chat_id, "handle": handle},
+            context=(update.message.chat_id, handle),
             name=str(update.message.chat_id)
         )
-    
-        update.message.reply_text("🚀 Download started! I'll keep you updated...")
+        
+        await update.message.reply_text("🚀 Download started! I'll keep you updated...")
         
     except Exception as e:
-        update.message.reply_text(f"❌ Error: {str(e)}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
         cleanup()
 
-def update_status(context: CallbackContext) -> None:
+# Update download status periodically
+async def update_status(context: CallbackContext) -> None:
     job = context.job
-    chat_id = job.context["chat_id"]
-    handle = job.context["handle"]
+    chat_id, handle = job.context
     s = handle.status()
     
     # Format status message
@@ -72,16 +74,17 @@ def update_status(context: CallbackContext) -> None:
     )
     
     try:
-        context.bot.send_message(chat_id, status_msg, parse_mode='Markdown')
+        await context.bot.send_message(chat_id, status_msg, parse_mode='Markdown')
     except:
         pass
 
     if s.is_seeding:
-        send_files(context.bot, chat_id)
+        await send_files(context.bot, chat_id)
         cleanup()
         job.schedule_removal()
 
-def send_files(bot: Bot, chat_id: int) -> None:
+# Send completed files to user
+async def send_files(bot: Bot, chat_id: int) -> None:
     try:
         for root, _, files in os.walk(DOWNLOAD_DIR):
             for file in files:
@@ -89,18 +92,20 @@ def send_files(bot: Bot, chat_id: int) -> None:
                     continue
                 file_path = os.path.join(root, file)
                 with open(file_path, 'rb') as f:
-                    bot.send_document(chat_id, f)
+                    await bot.send_document(chat_id, f)
                 os.remove(file_path)
-        bot.send_message(chat_id, "✅ All files sent and cleaned up!")
+        await bot.send_message(chat_id, "✅ All files sent and cleaned up!")
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Error sending files: {str(e)}")
+        await bot.send_message(chat_id, f"⚠️ Error sending files: {str(e)}")
 
+# Clean up residual files
 def cleanup():
     """Clean up residual files"""
     for f in os.listdir(DOWNLOAD_DIR):
         if f.endswith(".torrent") or os.path.isfile(os.path.join(DOWNLOAD_DIR, f)):
             os.remove(os.path.join(DOWNLOAD_DIR, f))
 
+# Main function to initialize the bot
 def main() -> None:
     # Create download directory
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
