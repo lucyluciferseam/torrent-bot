@@ -1,7 +1,6 @@
 import os
-import time
 import libtorrent as lt
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from io import BytesIO
 
