@@ -1,4 +1,5 @@
 import os
+import re
 import libtorrent as lt
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
@@ -11,16 +12,24 @@ STATUS_INTERVAL = 5  # Update interval in seconds
 
 # Initialize libtorrent session
 ses = lt.session()
-ses.listen_on(6881, 6891)  # Corrected listen_on with port range
+ses.listen_on(6881, 6891)  # Correct port range parameters
 
 # Ensure download directory exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 async def start(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(
-        "📤 Send me a torrent file to start downloading!\n"
+        "📤 Send me a torrent file or magnet link to start downloading!\n"
         "I'll send you the files once completed and clean up automatically!"
     )
+
+async def handle_input(update: Update, context: CallbackContext) -> None:
+    if update.message.document:
+        await handle_torrent(update, context)
+    elif update.message.text and update.message.text.startswith("magnet:"):
+        await handle_magnet(update, context)
+    else:
+        await update.message.reply_text("❌ Please send either a torrent file or magnet link")
 
 async def handle_torrent(update: Update, context: CallbackContext) -> None:
     chat_id = update.message.chat_id
@@ -50,32 +59,53 @@ async def handle_torrent(update: Update, context: CallbackContext) -> None:
         params.storage_mode = lt.storage_mode_t.storage_mode_sparse
 
         handle = ses.add_torrent(params)
-
-        # Schedule status updates
-        context.job_queue.run_repeating(
-            update_status,
-            STATUS_INTERVAL,
-            context=(chat_id, handle),
-            name=str(chat_id)
-        )
-
-        await update.message.reply_text("🚀 Download started! I'll keep you updated...")
+        await start_download(update, context, handle)
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
         cleanup()
 
+async def handle_magnet(update: Update, context: CallbackContext) -> None:
+    chat_id = update.message.chat_id
+    magnet_link = update.message.text
+    
+    try:
+        # Parse magnet link
+        params = lt.parse_magnet_uri(magnet_link)
+        params.save_path = DOWNLOAD_DIR
+        params.storage_mode = lt.storage_mode_t.storage_mode_sparse
+
+        handle = ses.add_torrent(params)
+        await update.message.reply_text("🔗 Magnet link recognized. Connecting to peers...")
+        await start_download(update, context, handle)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Invalid magnet link: {e}")
+        cleanup()
+
+async def start_download(update: Update, context: CallbackContext, handle: lt.torrent_handle) -> None:
+    chat_id = update.message.chat_id
+    # Schedule status updates
+    context.job_queue.run_repeating(
+        update_status,
+        STATUS_INTERVAL,
+        context=(chat_id, handle),
+        name=str(chat_id)
+    )
+    await update.message.reply_text("🚀 Download started! I'll keep you updated...")
+
 async def update_status(context: CallbackContext) -> None:
     job = context.job
     chat_id, handle = job.context
-    s = handle.status()
-
-    # Check if handle is valid
+    
     if not handle.is_valid():
         await context.bot.send_message(chat_id, "⚠️ Download failed or removed.")
         job.schedule_removal()
         return
 
+    s = handle.status()
+    
+    # Format status message
     status_msg = (
         f"📁 **{handle.name()}**\n"
         f"⏳ **Progress:** {s.progress * 100:.2f}%\n"
@@ -84,7 +114,7 @@ async def update_status(context: CallbackContext) -> None:
         f"📦 **Size:** {s.total_wanted / 1e9:.2f} GB\n"
         f"👥 **Peers:** {s.num_peers}"
     )
-
+    
     try:
         await context.bot.send_message(chat_id, status_msg, parse_mode='Markdown')
     except Exception as e:
@@ -120,9 +150,15 @@ def cleanup():
             print(f"Error deleting {file_path}: {e}")
 
 def main() -> None:
+    # Install with: pip install "python-telegram-bot[job-queue]"
     app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.MimeType("application/x-bittorrent"), handle_torrent))
+    app.add_handler(MessageHandler(
+        filters.Document.MimeType("application/x-bittorrent") | filters.TEXT & filters.Regex(r'^magnet:.*'),
+        handle_input
+    ))
+    
     app.run_polling()
 
 if __name__ == '__main__':
