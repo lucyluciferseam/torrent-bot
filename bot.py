@@ -2,7 +2,7 @@ import os
 import time
 import libtorrent as lt
 from telegram import Update, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import (Application, CommandHandler, MessageHandler, filters, CallbackContext)
 from io import BytesIO
 
 # Configuration
@@ -45,9 +45,10 @@ def handle_torrent(update: Update, context: CallbackContext) -> None:
         context.job_queue.run_repeating(
             update_status,
             STATUS_INTERVAL,
-            context=(update.message.chat_id, handle),
+            context={"chat_id": update.message.chat_id, "handle": handle},
             name=str(update.message.chat_id)
-        
+        )
+    
         update.message.reply_text("🚀 Download started! I'll keep you updated...")
         
     except Exception as e:
@@ -56,7 +57,8 @@ def handle_torrent(update: Update, context: CallbackContext) -> None:
 
 def update_status(context: CallbackContext) -> None:
     job = context.job
-    chat_id, handle = job.context
+    chat_id = job.context["chat_id"]
+    handle = job.context["handle"]
     s = handle.status()
     
     # Format status message
@@ -65,7 +67,7 @@ def update_status(context: CallbackContext) -> None:
         f"⏳ **Progress:** {s.progress * 100:.2f}%\n"
         f"🔽 **Download:** {s.download_rate / 1e6:.2f} MB/s\n"
         f"🔼 **Upload:** {s.upload_rate / 1e6:.2f} MB/s\n"
-        f"📦 **Size:** {handle.status().total_wanted / 1e9:.2f} GB\n"
+        f"📦 **Size:** {s.total_wanted / 1e9:.2f} GB\n"
         f"👥 **Peers:** {s.num_peers}"
     )
     
@@ -77,7 +79,7 @@ def update_status(context: CallbackContext) -> None:
     if s.is_seeding:
         send_files(context.bot, chat_id)
         cleanup()
-        context.job.schedule_removal()
+        job.schedule_removal()
 
 def send_files(bot: Bot, chat_id: int) -> None:
     try:
@@ -96,21 +98,19 @@ def send_files(bot: Bot, chat_id: int) -> None:
 def cleanup():
     """Clean up residual files"""
     for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith(".torrent"):
+        if f.endswith(".torrent") or os.path.isfile(os.path.join(DOWNLOAD_DIR, f)):
             os.remove(os.path.join(DOWNLOAD_DIR, f))
 
 def main() -> None:
     # Create download directory
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.document.mime_type("application/x-bittorrent"), handle_torrent))
-
-    updater.start_polling()
-    updater.idle()
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.MimeType("application/x-bittorrent"), handle_torrent))
+    
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
